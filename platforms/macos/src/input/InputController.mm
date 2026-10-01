@@ -4084,7 +4084,21 @@ static __weak MSIMEInputController *MSIMEQueuedPreferenceSaver;
     [[MSIMEInputController dictionarySessionHolders] removeObject:self];
 }
 
+// How long a focus change held this process's main thread. IMK delivers activateServer: and deactivateServer: while the client waits for the reply, and any synchronous call back into that client from here can stall both sides, so a slow one is a hitch the user sees in the host. Logged for every change, since there are few of them and the slow ones only mean something next to the rest.
+struct MSIMEFocusLatency {
+    const char *stage;
+    uint64_t started;
+    explicit MSIMEFocusLatency(const char *stage_)
+        : stage(stage_), started(msime_macos_diagnostic_enabled() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0) {}
+    ~MSIMEFocusLatency() {
+        if (!started) return;
+        msime_macos_diagnostic_writef("[focus-latency] stage=%s elapsed_ms=%.3f", stage,
+            static_cast<double>(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6);
+    }
+};
+
 - (void)activateServer:(id)sender {
+    const MSIMEFocusLatency latency("activate");
     // A newly activated IME session may target a different document/client.
     // Never carry host-owned closings across that boundary - including one this host still owed
     // the previous document, which cannot be written into this one.
@@ -4616,6 +4630,7 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
 }
 
 - (void)deactivateServer:(id)sender {
+    const MSIMEFocusLatency latency("deactivate");
     [[MSIMEInputModeHUDPanel sharedPanel] orderOut:nil];
     [[MSIMETypingEffectPanel sharedPanel] settle];
     // Every focus loss writes the key heatmap counts, including a late one for a previous client: they are this controller's presses either way.
